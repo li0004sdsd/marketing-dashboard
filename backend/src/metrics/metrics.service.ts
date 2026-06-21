@@ -4,6 +4,7 @@ import { Repository, Between, In } from 'typeorm';
 import { Metric } from './metric.entity';
 import { CreateMetricDto } from './dto/create-metric.dto';
 import { QueryMetricsDto } from './dto/query-metrics.dto';
+import { getAllowedCategories } from './metrics-permission';
 
 @Injectable()
 export class MetricsService implements OnModuleInit {
@@ -64,11 +65,16 @@ export class MetricsService implements OnModuleInit {
     }
   }
 
-  findAll() {
-    return this.repo.find({ order: { timestamp: 'DESC' } });
+  async findAll(role: string) {
+    const allowedCategories = getAllowedCategories(role);
+    return this.repo.find({
+      where: { category: In(allowedCategories) },
+      order: { timestamp: 'DESC' },
+    });
   }
 
-  async findByQuery(query: QueryMetricsDto) {
+  async findByQuery(query: QueryMetricsDto, role: string) {
+    const allowedCategories = getAllowedCategories(role);
     const where: any = {};
 
     if (query.startDate && query.endDate) {
@@ -82,7 +88,13 @@ export class MetricsService implements OnModuleInit {
     }
 
     if (query.category) {
-      where.category = query.category;
+      if (!allowedCategories.includes(query.category)) {
+        where.category = In(allowedCategories);
+      } else {
+        where.category = query.category;
+      }
+    } else {
+      where.category = In(allowedCategories);
     }
 
     return this.repo.find({
@@ -91,8 +103,10 @@ export class MetricsService implements OnModuleInit {
     });
   }
 
-  async getSummary(query?: QueryMetricsDto) {
-    const metrics = query ? await this.findByQuery(query) : await this.findAll();
+  async getSummary(query: QueryMetricsDto | undefined, role: string) {
+    const metrics = query
+      ? await this.findByQuery(query, role)
+      : await this.findAll(role);
 
     const grouped: Record<string, Metric[]> = {};
     for (const m of metrics) {
