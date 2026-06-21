@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, UseGuards, Query } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { DashboardService } from './dashboard.service';
 
@@ -8,12 +8,14 @@ export class DashboardController {
   constructor(private service: DashboardService) {}
 
   @Get('kpis')
-  getKpis() {
-    return this.service.getKpis();
+  getKpis(@Query('days') days?: string) {
+    const daysNum = days ? parseInt(days, 10) : undefined;
+    return this.service.getKpis(daysNum);
   }
 
   @Get('charts')
-  getCharts() {
-    return this.service.getCharts();
+  getCharts(@Query('days') days?: string) {
+    const daysNum = days ? parseInt(days, 10) : undefined;
+    return this.service.getCharts(daysNum);
   }
 }

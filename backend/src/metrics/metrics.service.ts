@@ -1,8 +1,9 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Between, In } from 'typeorm';
 import { Metric } from './metric.entity';
 import { CreateMetricDto } from './dto/create-metric.dto';
+import { QueryMetricsDto } from './dto/query-metrics.dto';
 
 @Injectable()
 export class MetricsService implements OnModuleInit {
@@ -64,28 +65,71 @@ export class MetricsService implements OnModuleInit {
   }
 
   findAll() {
-    return this.repo.find({ order: { timestamp: 'DESC' }, take: 200 });
+    return this.repo.find({ order: { timestamp: 'DESC' } });
   }
 
-  async getSummary() {
-    const metrics = await this.repo.find({ order: { timestamp: 'DESC' } });
+  async findByQuery(query: QueryMetricsDto) {
+    const where: any = {};
+
+    if (query.startDate && query.endDate) {
+      where.timestamp = Between(new Date(query.startDate), new Date(query.endDate));
+    } else if (query.startDate) {
+      where.timestamp = Between(new Date(query.startDate), new Date());
+    }
+
+    if (query.names && query.names.length > 0) {
+      where.name = In(query.names);
+    }
+
+    if (query.category) {
+      where.category = query.category;
+    }
+
+    return this.repo.find({
+      where,
+      order: { timestamp: 'ASC' },
+    });
+  }
+
+  async getSummary(query?: QueryMetricsDto) {
+    const metrics = query ? await this.findByQuery(query) : await this.findAll();
+
     const grouped: Record<string, Metric[]> = {};
     for (const m of metrics) {
       if (!grouped[m.name]) grouped[m.name] = [];
       grouped[m.name].push(m);
     }
+
     return Object.entries(grouped).map(([name, items]) => {
       const sorted = items.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       const latest = sorted[0];
+      const earliest = sorted[sorted.length - 1];
       const prev = sorted[1];
-      const change = prev ? parseFloat(((latest.value - prev.value) / prev.value * 100).toFixed(2)) : 0;
+
+      const periodChange = earliest && earliest.value !== 0
+        ? parseFloat(((latest.value - earliest.value) / earliest.value * 100).toFixed(2))
+        : 0;
+
+      const pointChange = prev && prev.value !== 0
+        ? parseFloat(((latest.value - prev.value) / prev.value * 100).toFixed(2))
+        : 0;
+
+      const avgValue = items.length
+        ? parseFloat((items.reduce((acc, i) => acc + i.value, 0) / items.length).toFixed(2))
+        : 0;
+
       return {
         name,
         latestValue: latest.value,
+        earliestValue: earliest?.value ?? 0,
+        avgValue,
         unit: latest.unit,
         category: latest.category,
-        changePercent: change,
+        changePercent: pointChange,
+        periodChangePercent: periodChange,
         dataPoints: sorted.length,
+        startDate: earliest?.timestamp,
+        endDate: latest.timestamp,
       };
     });
   }

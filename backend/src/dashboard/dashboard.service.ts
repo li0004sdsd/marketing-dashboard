@@ -1,46 +1,50 @@
 import { Injectable } from '@nestjs/common';
 import { MetricsService } from '../metrics/metrics.service';
+import { QueryMetricsDto } from '../metrics/dto/query-metrics.dto';
 
 @Injectable()
 export class DashboardService {
   constructor(private metricsService: MetricsService) {}
 
-  async getKpis() {
-    const summary = await this.metricsService.getSummary();
-    const keyMetrics = ['Revenue', 'Page Views', 'Click-Through Rate', 'Customer Retention Rate'];
-    return summary
-      .filter(s => keyMetrics.includes(s.name))
-      .map(s => ({
-        name: s.name,
-        value: s.latestValue,
-        unit: s.unit,
-        change: s.changePercent,
-        trend: s.changePercent >= 0 ? 'up' : 'down',
-        category: s.category,
-      }));
+  async getKpis(days: number = 30) {
+    const startDate = new Date(Date.now() - days * 86400000).toISOString();
+    const query: QueryMetricsDto = {
+      startDate,
+      names: ['Revenue', 'Page Views', 'Click-Through Rate', 'Customer Retention Rate'],
+    };
+    const summary = await this.metricsService.getSummary(query);
+    return summary.map(s => ({
+      name: s.name,
+      value: s.latestValue,
+      unit: s.unit,
+      change: s.periodChangePercent,
+      trend: s.periodChangePercent >= 0 ? 'up' : 'down',
+      category: s.category,
+    }));
   }
 
-  async getCharts() {
-    const all = await this.metricsService.findAll();
-    const last7Days = new Date(Date.now() - 7 * 86400000);
+  async getCharts(days: number = 7) {
+    const startDate = new Date(Date.now() - days * 86400000).toISOString();
 
-    const revenueData = all
-      .filter(m => m.name === 'Revenue' && new Date(m.timestamp) >= last7Days)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-      .map(m => ({
-        date: new Date(m.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        value: m.value,
-      }));
+    const revenueQuery: QueryMetricsDto = { startDate, names: ['Revenue'] };
+    const visitorQuery: QueryMetricsDto = { startDate, names: ['Unique Visitors'] };
 
-    const visitorData = all
-      .filter(m => m.name === 'Unique Visitors' && new Date(m.timestamp) >= last7Days)
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-      .map(m => ({
-        date: new Date(m.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        value: m.value,
-      }));
+    const [revenueMetrics, visitorMetrics, summary] = await Promise.all([
+      this.metricsService.findByQuery(revenueQuery),
+      this.metricsService.findByQuery(visitorQuery),
+      this.metricsService.getSummary({ startDate }),
+    ]);
 
-    const summary = await this.metricsService.getSummary();
+    const revenueData = revenueMetrics.map(m => ({
+      date: new Date(m.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      value: m.value,
+    }));
+
+    const visitorData = visitorMetrics.map(m => ({
+      date: new Date(m.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      value: m.value,
+    }));
+
     const categoryData = ['acquisition', 'engagement', 'revenue', 'retention'].map(cat => {
       const items = summary.filter(s => s.category === cat);
       const avg = items.length ? items.reduce((acc, i) => acc + i.latestValue, 0) / items.length : 0;
