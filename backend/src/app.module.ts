@@ -11,6 +11,7 @@ import { User } from './users/user.entity';
 import { DataSource } from './data-sources/data-source.entity';
 import { Metric } from './metrics/metric.entity';
 import { MonitorSnapshot } from './monitoring/monitor-snapshot.entity';
+import { ScheduledSubscription } from './monitoring/scheduled-subscription.entity';
 import { DashboardLayout } from './dashboard-layouts/dashboard-layout.entity';
 
 @Module({
@@ -18,7 +19,7 @@ import { DashboardLayout } from './dashboard-layouts/dashboard-layout.entity';
     TypeOrmModule.forRoot({
       type: 'better-sqlite3',
       database: 'marketing_dashboard.db',
-      entities: [User, DataSource, Metric, MonitorSnapshot, DashboardLayout],
+      entities: [User, DataSource, Metric, MonitorSnapshot, ScheduledSubscription, DashboardLayout],
       synchronize: true,
     }),
     UsersModule,
