@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DataSource, Repository, QueryRunner } from 'typeorm';
 import { MonitoringService } from './monitoring.service';
 import { MonitorSnapshot } from './monitor-snapshot.entity';
@@ -48,6 +49,18 @@ describe('MonitoringService', () => {
             find: jest.fn().mockResolvedValue([]),
             save: jest.fn().mockResolvedValue({}),
             create: jest.fn().mockImplementation(data => data),
+            createQueryBuilder: jest.fn().mockReturnValue({
+              select: jest.fn().mockReturnThis(),
+              addSelect: jest.fn().mockReturnThis(),
+              where: jest.fn().mockReturnThis(),
+              andWhere: jest.fn().mockReturnThis(),
+              groupBy: jest.fn().mockReturnThis(),
+              orderBy: jest.fn().mockReturnThis(),
+              limit: jest.fn().mockReturnThis(),
+              setParameter: jest.fn().mockReturnThis(),
+              getRawOne: jest.fn().mockResolvedValue(null),
+              getRawMany: jest.fn().mockResolvedValue([]),
+            }),
           },
         },
         {
@@ -250,6 +263,422 @@ describe('MonitoringService', () => {
       const churnSnap = savedSnapshots.find((s: any) => s.metricName === 'Churn Rate');
 
       expect(churnSnap.status).toBe('normal');
+    });
+  });
+
+  describe('compareSnapshots 历史快照对比', () => {
+    const tsA = '2026-06-15T00:00:00.000Z';
+    const tsB = '2026-06-20T00:00:00.000Z';
+
+    function makeBatchMetrics(
+      batchId: string,
+      entries: { metricName: string; value: number; status: string }[],
+      recordedAt: Date,
+    ): MonitorSnapshot[] {
+      return entries.map((e, i) => ({
+        id: i + 1,
+        metricName: e.metricName,
+        value: e.value,
+        unit: e.metricName === 'Revenue' ? 'USD' : '%',
+        status: e.status,
+        batchId,
+        recordedAt,
+      })) as any;
+    }
+
+    function setupBatchLookup(
+      repoMock: any,
+      mapping: Record<string, { batchId: string; recordedAt: string } | null>,
+    ) {
+      (repoMock.createQueryBuilder as jest.Mock).mockImplementation(() => {
+        let callIndex = 0;
+        return {
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          limit: jest.fn().mockReturnThis(),
+          setParameter: jest.fn().mockReturnThis(),
+          getRawOne: jest.fn().mockImplementation(() => {
+            const keys = Object.keys(mapping);
+            const key = keys[callIndex % keys.length];
+            callIndex++;
+            return Promise.resolve(mapping[key]);
+          }),
+          getRawMany: jest.fn().mockResolvedValue([]),
+        };
+      });
+    }
+
+    it('时间戳格式无效时抛出 BadRequestException', async () => {
+      await expect(
+        service.compareSnapshots('not-a-date', tsB, 'admin'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('两个时间戳相同时抛出 BadRequestException', async () => {
+      await expect(
+        service.compareSnapshots(tsA, tsA, 'admin'),
+      ).rejects.toThrow('两个时间点不能相同');
+    });
+
+    it('找不到快照批次时抛出 NotFoundException', async () => {
+      setupBatchLookup(repo, { tsA: null, tsB: null });
+
+      await expect(
+        service.compareSnapshots(tsA, tsB, 'admin'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('快照批次指标数为 0 时判定不完整', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+      (repo.find as jest.Mock).mockResolvedValue([]);
+
+      await expect(
+        service.compareSnapshots(tsA, tsB, 'admin'),
+      ).rejects.toThrow(/快照不完整/);
+    });
+
+    it('快照批次指标数少于预期时判定不完整', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+      const partialMetrics = makeBatchMetrics(
+        'batch_A',
+        [{ metricName: 'Revenue', value: 8000, status: 'normal' }],
+        new Date(tsA),
+      );
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(partialMetrics);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
+
+      await expect(
+        service.compareSnapshots(tsA, tsB, 'admin'),
+      ).rejects.toThrow(/指标数据不完整/);
+    });
+
+    it('正常对比: 返回两个快照完整指标、diff 和 summary', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+
+      const metricsA = makeBatchMetrics(
+        'batch_A',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+        ],
+        new Date(tsA),
+      );
+
+      const metricsB = makeBatchMetrics(
+        'batch_B',
+        [
+          { metricName: 'Revenue', value: 8800, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 58, status: 'warning' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 2.5, status: 'warning' },
+        ],
+        new Date(tsB),
+      );
+
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(metricsA);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve(metricsB);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      expect(result.snapshotA.batchId).toBe('batch_A');
+      expect(result.snapshotB.batchId).toBe('batch_B');
+
+      expect(result.snapshotA.metrics.length).toBe(4);
+      expect(result.snapshotB.metrics.length).toBe(4);
+      expect(result.snapshotA.metrics.every(m => m.present === true)).toBe(true);
+      expect(result.snapshotB.metrics.every(m => m.present === true)).toBe(true);
+
+      expect(result.diffs.length).toBe(4);
+
+      const revenueDiff = result.diffs.find(d => d.metricName === 'Revenue')!;
+      expect(revenueDiff.valueA).toBe(8000);
+      expect(revenueDiff.valueB).toBe(8800);
+      expect(revenueDiff.valueDelta).toBe(800);
+      expect(revenueDiff.valueChangePercent).toBeCloseTo(10, 1);
+      expect(revenueDiff.statusChanged).toBe(false);
+
+      const bounceDiff = result.diffs.find(d => d.metricName === 'Bounce Rate')!;
+      expect(bounceDiff.statusA).toBe('normal');
+      expect(bounceDiff.statusB).toBe('warning');
+      expect(bounceDiff.statusChanged).toBe(true);
+
+      expect(result.summary.totalMetrics).toBe(4);
+      expect(result.summary.metricsWithStatusChange).toBe(2);
+      expect(result.summary.newMetricsInB).toBe(0);
+      expect(result.summary.removedMetricsInB).toBe(0);
+    });
+
+    it('向前兼容: A 无新指标、B 新增指标时, A 侧标记 present=false, value=null', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+
+      const metricsA = makeBatchMetrics(
+        'batch_A',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+        ],
+        new Date(tsA),
+      );
+
+      const metricsB = makeBatchMetrics(
+        'batch_B',
+        [
+          { metricName: 'Revenue', value: 8800, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 58, status: 'warning' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 2.5, status: 'warning' },
+          { metricName: 'New Metric', value: 42, status: 'normal' },
+        ],
+        new Date(tsB),
+      );
+
+      const summaryWithNewMetric = [
+        ...mockSummaryData,
+        { name: 'New Metric', latestValue: 42, unit: 'units', category: 'revenue', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 42, avgValue: 42, startDate: new Date(tsB), endDate: new Date(tsB) },
+      ];
+      (metricsService.getSummary as jest.Mock).mockResolvedValue(summaryWithNewMetric);
+
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(metricsA);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve(metricsB);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      const newMetric = result.diffs.find(d => d.metricName === 'New Metric')!;
+      expect(newMetric).toBeDefined();
+      expect(newMetric.presentInA).toBe(false);
+      expect(newMetric.presentInB).toBe(true);
+      expect(newMetric.valueA).toBeNull();
+      expect(newMetric.valueB).toBe(42);
+      expect(newMetric.valueDelta).toBeNull();
+      expect(newMetric.valueChangePercent).toBeNull();
+      expect(newMetric.statusChanged).toBe(false);
+
+      const aMissing = result.snapshotA.metrics.find(m => m.metricName === 'New Metric')!;
+      expect(aMissing.present).toBe(false);
+      expect(aMissing.value).toBeNull();
+
+      expect(result.summary.newMetricsInB).toBe(1);
+      expect(result.summary.totalMetrics).toBe(5);
+    });
+
+    it('向前兼容: A 有旧指标但 B 无该指标时, B 侧标记 present=false', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+
+      const metricsA = makeBatchMetrics(
+        'batch_A',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+          { metricName: 'Deprecated Metric', value: 99, status: 'normal' },
+        ],
+        new Date(tsA),
+      );
+
+      const metricsB = makeBatchMetrics(
+        'batch_B',
+        [
+          { metricName: 'Revenue', value: 8800, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 58, status: 'warning' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 2.5, status: 'warning' },
+        ],
+        new Date(tsB),
+      );
+
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(metricsA);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve(metricsB);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      const deprecatedDiff = result.diffs.find(d => d.metricName === 'Deprecated Metric')!;
+      expect(deprecatedDiff).toBeDefined();
+      expect(deprecatedDiff.presentInA).toBe(true);
+      expect(deprecatedDiff.presentInB).toBe(false);
+      expect(deprecatedDiff.valueA).toBe(99);
+      expect(deprecatedDiff.valueB).toBeNull();
+      expect(deprecatedDiff.statusChanged).toBe(false);
+
+      expect(result.summary.removedMetricsInB).toBe(1);
+      expect(result.summary.totalMetrics).toBe(5);
+    });
+
+    it('向前兼容: 合并 union(metricsA ∪ metricsB ∪ 实时最新指标列表)', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+
+      const metricsA = makeBatchMetrics(
+        'batch_A',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+        ],
+        new Date(tsA),
+      );
+
+      const metricsB = makeBatchMetrics(
+        'batch_B',
+        [
+          { metricName: 'Revenue', value: 8800, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 2.5, status: 'warning' },
+        ],
+        new Date(tsB),
+      );
+
+      const realtimeSummary = [
+        { name: 'Revenue', latestValue: 0, unit: 'USD', category: 'revenue', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 0, avgValue: 0, startDate: new Date(), endDate: new Date() },
+        { name: 'Bounce Rate', latestValue: 0, unit: '%', category: 'engagement', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 0, avgValue: 0, startDate: new Date(), endDate: new Date() },
+        { name: 'Click-Through Rate', latestValue: 0, unit: '%', category: 'engagement', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 0, avgValue: 0, startDate: new Date(), endDate: new Date() },
+        { name: 'Churn Rate', latestValue: 0, unit: '%', category: 'retention', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 0, avgValue: 0, startDate: new Date(), endDate: new Date() },
+        { name: 'Future Metric', latestValue: 0, unit: 'u', category: 'revenue', changePercent: 0, periodChangePercent: 0, dataPoints: 1, earliestValue: 0, avgValue: 0, startDate: new Date(), endDate: new Date() },
+      ];
+      (metricsService.getSummary as jest.Mock).mockResolvedValue(realtimeSummary);
+
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(metricsA);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve(metricsB);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      const names = result.diffs.map(d => d.metricName).sort();
+      expect(names).toEqual([
+        'Bounce Rate',
+        'Churn Rate',
+        'Click-Through Rate',
+        'Future Metric',
+        'Revenue',
+      ]);
+
+      const churn = result.diffs.find(d => d.metricName === 'Churn Rate')!;
+      expect(churn.presentInA).toBe(false);
+      expect(churn.presentInB).toBe(false);
+
+      const future = result.diffs.find(d => d.metricName === 'Future Metric')!;
+      expect(future.presentInA).toBe(false);
+      expect(future.presentInB).toBe(false);
+    });
+
+    it('数值无变化时 valueDelta=0, valueChangePercent=0, statusChanged=false', async () => {
+      setupBatchLookup(repo, {
+        tsA: { batchId: 'batch_A', recordedAt: tsA },
+        tsB: { batchId: 'batch_B', recordedAt: tsB },
+      });
+
+      const metricsA = makeBatchMetrics(
+        'batch_A',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+        ],
+        new Date(tsA),
+      );
+
+      const metricsB = makeBatchMetrics(
+        'batch_B',
+        [
+          { metricName: 'Revenue', value: 8000, status: 'normal' },
+          { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+          { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+          { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+        ],
+        new Date(tsB),
+      );
+
+      (repo.find as jest.Mock).mockImplementation((opts: any) => {
+        if (opts?.where?.batchId === 'batch_A') return Promise.resolve(metricsA);
+        if (opts?.where?.batchId === 'batch_B') return Promise.resolve(metricsB);
+        return Promise.resolve([]);
+      });
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      expect(result.summary.metricsWithValueChange).toBe(0);
+      expect(result.summary.metricsWithStatusChange).toBe(0);
+      for (const d of result.diffs) {
+        expect(d.valueDelta).toBe(0);
+      }
+    });
+
+    it('选择离目标时间戳最近的批次 (前后扫描 24h)', async () => {
+      const callLog: any[] = [];
+      (repo.createQueryBuilder as jest.Mock).mockImplementation(() => {
+        return {
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockImplementation((sql: string) => {
+            callLog.push(sql);
+            return { mockReturnThis: () => ({}) };
+          }).mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          limit: jest.fn().mockReturnThis(),
+          setParameter: jest.fn().mockReturnThis(),
+          getRawOne: jest
+            .fn()
+            .mockResolvedValueOnce({ batchId: 'batch_before_A', recordedAt: tsA })
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ batchId: 'batch_before_B', recordedAt: tsB })
+            .mockResolvedValueOnce(null),
+          getRawMany: jest.fn().mockResolvedValue([]),
+        };
+      });
+
+      const fourMetrics = [
+        { metricName: 'Revenue', value: 8000, status: 'normal' },
+        { metricName: 'Bounce Rate', value: 42, status: 'normal' },
+        { metricName: 'Churn Rate', value: 2.1, status: 'normal' },
+        { metricName: 'Click-Through Rate', value: 3.0, status: 'normal' },
+      ];
+
+      (repo.find as jest.Mock).mockResolvedValue(makeBatchMetrics('batch_X', fourMetrics as any, new Date()));
+
+      const result = await service.compareSnapshots(tsA, tsB, 'admin');
+
+      expect(result.snapshotA.batchId).toBe('batch_before_A');
+      expect(result.snapshotB.batchId).toBe('batch_before_B');
     });
   });
 });
