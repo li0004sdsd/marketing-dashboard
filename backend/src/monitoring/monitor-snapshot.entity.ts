@@ -1,6 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
 
 @Entity('monitor_snapshots')
+@Index(['batchId', 'metricName'], { unique: true })
 export class MonitorSnapshot {
   @PrimaryGeneratedColumn()
   id: number;
@@ -16,6 +17,9 @@ export class MonitorSnapshot {
 
   @Column({ nullable: true })
   unit: string;
+
+  @Column()
+  batchId: string;
 
   @CreateDateColumn()
   recordedAt: Date;
