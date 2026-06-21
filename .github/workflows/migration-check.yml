@@ -1,0 +1,30 @@
+name: Migration Check
+
+on:
+  pull_request:
+    paths:
+      - 'backend/src/migrations/**'
+      - 'backend/src/**/*.entity.ts'
+      - 'backend/data-source.ts'
+
+jobs:
+  migration-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - name: Check migrations are valid and reversible
+        run: npm run migration:check
+      - name: Verify no synchronize in app module
+        run: |
+          if grep -q "synchronize: true" src/app.module.ts; then
+            echo "::error::synchronize:true is forbidden — use migration scripts instead"
+            exit 1
+          fi
+          echo "✓ synchronize is disabled"

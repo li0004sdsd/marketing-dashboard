@@ -13,6 +13,8 @@ import { Metric } from './metrics/metric.entity';
 import { MonitorSnapshot } from './monitoring/monitor-snapshot.entity';
 import { ScheduledSubscription } from './monitoring/scheduled-subscription.entity';
 import { DashboardLayout } from './dashboard-layouts/dashboard-layout.entity';
+import { BaselineInit } from './migrations/1700000000000-BaselineInit';
+import { AddScheduledSubscriptions } from './migrations/1700000000001-AddScheduledSubscriptions';
 
 @Module({
   imports: [
@@ -20,7 +22,9 @@ import { DashboardLayout } from './dashboard-layouts/dashboard-layout.entity';
       type: 'better-sqlite3',
       database: 'marketing_dashboard.db',
       entities: [User, DataSource, Metric, MonitorSnapshot, ScheduledSubscription, DashboardLayout],
-      synchronize: true,
+      synchronize: false,
+      migrationsRun: true,
+      migrations: [BaselineInit, AddScheduledSubscriptions],
     }),
     UsersModule,
     AuthModule,

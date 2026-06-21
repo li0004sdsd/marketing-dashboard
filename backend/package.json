@@ -5,7 +5,13 @@
     "build": "nest build",
     "start": "node dist/main",
     "start:dev": "ts-node -r tsconfig-paths/register src/main.ts",
-    "test": "jest"
+    "test": "jest",
+    "migration:generate": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d data-source.ts migration:generate",
+    "migration:run": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d data-source.ts migration:run",
+    "migration:revert": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d data-source.ts migration:revert",
+    "migration:show": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d data-source.ts migration:show",
+    "migration:baseline": "ts-node -r tsconfig-paths/register src/scripts/migration-baseline.ts",
+    "migration:check": "ts-node -r tsconfig-paths/register src/scripts/migration-check.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
