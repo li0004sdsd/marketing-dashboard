@@ -12,19 +12,22 @@ import { DataSource } from './data-sources/data-source.entity';
 import { Metric } from './metrics/metric.entity';
 import { MonitorSnapshot } from './monitoring/monitor-snapshot.entity';
 import { ScheduledSubscription } from './monitoring/scheduled-subscription.entity';
+import { AlertRule } from './monitoring/alert-rule.entity';
+import { AlertEvent } from './monitoring/alert-event.entity';
 import { DashboardLayout } from './dashboard-layouts/dashboard-layout.entity';
 import { BaselineInit } from './migrations/1700000000000-BaselineInit';
 import { AddScheduledSubscriptions } from './migrations/1700000000001-AddScheduledSubscriptions';
+import { AddAlertRulesAndEvents } from './migrations/1700000000002-AddAlertRulesAndEvents';
 
 @Module({
   imports: [
     TypeOrmModule.forRoot({
       type: 'better-sqlite3',
       database: 'marketing_dashboard.db',
-      entities: [User, DataSource, Metric, MonitorSnapshot, ScheduledSubscription, DashboardLayout],
+      entities: [User, DataSource, Metric, MonitorSnapshot, ScheduledSubscription, AlertRule, AlertEvent, DashboardLayout],
       synchronize: false,
       migrationsRun: true,
-      migrations: [BaselineInit, AddScheduledSubscriptions],
+      migrations: [BaselineInit, AddScheduledSubscriptions, AddAlertRulesAndEvents],
     }),
     UsersModule,
     AuthModule,

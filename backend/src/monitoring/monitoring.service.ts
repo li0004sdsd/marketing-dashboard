@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, QueryRunner } from 'typeorm';
 import { MonitorSnapshot } from './monitor-snapshot.entity';
 import { MetricsService } from '../metrics/metrics.service';
+import { AlertEngine } from './alert-engine.service';
 
 export interface SnapshotMetricPoint {
   metricName: string;
@@ -56,6 +57,7 @@ export class MonitoringService implements OnModuleInit {
     private repo: Repository<MonitorSnapshot>,
     private dataSource: DataSource,
     private metricsService: MetricsService,
+    private alertEngine: AlertEngine,
   ) {}
 
   async onModuleInit() {
@@ -118,6 +120,10 @@ export class MonitoringService implements OnModuleInit {
 
       await queryRunner.manager.save(snaps);
       await queryRunner.commitTransaction();
+
+      this.alertEngine.evaluateBatch(batchId).catch(err => {
+        console.error('Alert engine evaluation failed:', err);
+      });
 
       return batchId;
     } catch (error) {
